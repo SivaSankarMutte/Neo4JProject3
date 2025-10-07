@@ -1,0 +1,15 @@
+streamlit
+python-dotenv
+pandas
+openpyxl
+langchain-core
+langchain-community
+langchain-groq
+langchain-huggingface
+faiss-cpu
+neo4j
+
+python-docx
+Pillow
+pytesseract
+PyMuPDF
