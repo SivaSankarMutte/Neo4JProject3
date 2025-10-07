@@ -8,8 +8,9 @@ langchain-groq
 langchain-huggingface
 faiss-cpu
 neo4j
-
+sentence-transformers
 python-docx
 Pillow
 pytesseract
+
 PyMuPDF
