@@ -216,15 +216,20 @@ def build_vector_store_and_graph():
 
 # --- DYNAMIC GRAPH RETRIEVAL CHAIN ---
 
+# --- DYNAMIC GRAPH RETRIEVAL CHAIN ---
+
 def get_dynamic_graph_context(user_query: str) -> Document:
     """Uses LLM to generate and execute a Cypher query against the Neo4j graph."""
     if not neo4j_graph:
         return Document(page_content="Neo4j not available.")
 
+    # Use the LangChain GraphCypherQAChain to dynamically generate Cypher
     cypher_chain = GraphCypherQAChain.from_llm(
         llm=llm, 
         graph=neo4j_graph, 
-        verbose=False 
+        verbose=False, 
+        # === FIX: ADD THIS PARAMETER TO ACKNOWLEDGE SECURITY RISK ===
+        allow_dangerous_requests=True 
     )
     
     try:
