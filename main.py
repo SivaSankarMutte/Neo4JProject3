@@ -19,7 +19,7 @@ from neo4j import GraphDatabase
 import docx
 import pytesseract
 from PIL import Image
-import fitz  # PyMuPDF
+import fitz
 
 # --- CONFIGURATION & ENV SETUP ---
 load_dotenv()
