@@ -213,9 +213,7 @@ def build_vector_store_and_graph():
 
         st.success("✅ Neo4j Graph populated.")
 
-# --- DYNAMIC GRAPH RETRIEVAL CHAIN (DEBUG VERSION) ---
-
-# --- DYNAMIC GRAPH RETRIEVAL CHAIN (FINAL FIX) ---
+# --- DYNAMIC GRAPH RETRIEVAL CHAIN (COMPATIBILITY FIX) ---
 
 def get_dynamic_graph_context(user_query: str) -> Document:
     """Uses LLM to generate and execute a Cypher query against the Neo4j graph."""
@@ -223,31 +221,43 @@ def get_dynamic_graph_context(user_query: str) -> Document:
         return Document(page_content="Neo4j not available.")
 
     # 1. FORCE THE GRAPH SCHEMA TO BE REFRESHED
-    # This ensures the LLM has the latest, correct metadata about nodes and relationships
-    neo4j_graph.refresh_schema() 
-    
-    # Define a custom prompt prefix to guide the LLM's Cypher generation
-    # This is often needed when the default prompt fails to encourage WHERE clauses.
-    CYPHER_PREFIX = """
-    Task: Generate a Cypher statement to answer the question, focusing on filtering using properties like description, name, or ID.
-    Always filter the tickets by CONTAINS or exact match on ticket properties (e.g., WHERE t.description CONTAINS 'keyword').
-    Schema: {graph_schema}
-    Question: {question}
-    Cypher:
-    """
+    # This is a good practice to ensure the LLM has the latest schema.
+    try:
+        neo4j_graph.refresh_schema() 
+    except Exception as e:
+        st.warning(f"Failed to refresh Neo4j schema: {e}")
+        
+    # --- Custom Cypher Generation Prompt Template ---
+    # This template is structured to tell the LLM to use WHERE/CONTAINS
+    # It must include {schema} and {question} placeholders for the chain to work.
+    custom_cypher_template = """
+    You are an expert Cypher query generator for a helpdesk system. 
+    Based on the provided Neo4j graph schema, write a Cypher query that precisely addresses the user's question.
 
-    # Use the LangChain GraphCypherQAChain
+    RULES:
+    1. For searching ticket descriptions, use the `CONTAINS` operator or a Full-Text Search index (if available) instead of exact matching.
+    2. Only return the ticket details (description, resolution, ticketId, category, application name).
+    3. The schema is: {schema}
+
+    Question: {question}
+    Cypher Query:
+    """
+    
+    # Create the LLM chain that generates the Cypher query using the custom prompt
+    cypher_generator_prompt = ChatPromptTemplate.from_template(custom_cypher_template)
+    
+    # Instantiate the GraphCypherQAChain with the custom prompt for the Cypher step
     cypher_chain = GraphCypherQAChain.from_llm(
         llm=llm, 
         graph=neo4j_graph, 
-        verbose=True, # Keep True for now to verify the fix
+        verbose=True, 
         allow_dangerous_requests=True,
-        # Override the default prompt template to include better instructions
-        cypher_prompt=ChatPromptTemplate.from_template(CYPHER_PREFIX)
+        # This parameter controls the prompt for the Cypher generation step
+        cypher_prompt=cypher_generator_prompt 
     )
     
     try:
-        # Run the chain with the improved prefix
+        # Run the chain
         graph_result = cypher_chain.run(user_query)
         
         return Document(
