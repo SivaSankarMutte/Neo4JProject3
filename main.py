@@ -213,9 +213,6 @@ def build_vector_store_and_graph():
 
         st.success("✅ Neo4j Graph populated.")
 
-
-# --- DYNAMIC GRAPH RETRIEVAL CHAIN ---
-
 # --- DYNAMIC GRAPH RETRIEVAL CHAIN (DEBUG VERSION) ---
 
 def get_dynamic_graph_context(user_query: str) -> Document:
@@ -223,29 +220,31 @@ def get_dynamic_graph_context(user_query: str) -> Document:
     if not neo4j_graph:
         return Document(page_content="Neo4j not available.")
 
-    # 1. SET VERBOSE=TRUE TO SEE THE GENERATED CYPHER QUERY
+    # 1. SET VERBOSE=TRUE TO SEE THE GENERATED CYPHER QUERY IN YOUR CONSOLE
     cypher_chain = GraphCypherQAChain.from_llm(
         llm=llm, 
         graph=neo4j_graph, 
-        verbose=True,  # <--- CHANGED TO TRUE
+        verbose=True,  # <--- Essential for debugging
         allow_dangerous_requests=True 
     )
     
     try:
         graph_result = cypher_chain.run(user_query)
         
-        # Check if the result is meaningful
+        # Check if the result is a generic failure response from the LLM itself
         if "I cannot answer the question" in graph_result or "did not find any information" in graph_result:
-             return Document(page_content="Graph query was successful but returned no relevant data.")
+             # This means the LLM got no data or irrelevant data from the Cypher execution
+             return Document(page_content=f"Graph query successfully ran, but returned no relevant data or LLM couldn't synthesize the answer. Raw result: {graph_result}")
 
         return Document(
             page_content=f"Knowledge Graph Query Result: {graph_result}",
             metadata={"source": "Neo4j Graph"}
         )
     except Exception as e:
-        # 2. CAPTURE AND DISPLAY THE ACTUAL ERROR
+        # 2. CAPTURE AND DISPLAY THE ACTUAL PYTHON/DATABASE ERROR
         st.error(f"❌ Neo4j/Cypher Chain Execution Error: {e}")
-        return Document(page_content="Graph query failed or provided no results.")
+        return Document(page_content="Graph query failed or provided no results due to an execution error.")
+
 
 # --- COMBINED RAG CHAIN ---
 
