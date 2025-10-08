@@ -215,36 +215,48 @@ def build_vector_store_and_graph():
 
 # --- DYNAMIC GRAPH RETRIEVAL CHAIN (DEBUG VERSION) ---
 
+# --- DYNAMIC GRAPH RETRIEVAL CHAIN (FINAL FIX) ---
+
 def get_dynamic_graph_context(user_query: str) -> Document:
     """Uses LLM to generate and execute a Cypher query against the Neo4j graph."""
     if not neo4j_graph:
         return Document(page_content="Neo4j not available.")
 
-    # 1. SET VERBOSE=TRUE TO SEE THE GENERATED CYPHER QUERY IN YOUR CONSOLE
+    # 1. FORCE THE GRAPH SCHEMA TO BE REFRESHED
+    # This ensures the LLM has the latest, correct metadata about nodes and relationships
+    neo4j_graph.refresh_schema() 
+    
+    # Define a custom prompt prefix to guide the LLM's Cypher generation
+    # This is often needed when the default prompt fails to encourage WHERE clauses.
+    CYPHER_PREFIX = """
+    Task: Generate a Cypher statement to answer the question, focusing on filtering using properties like description, name, or ID.
+    Always filter the tickets by CONTAINS or exact match on ticket properties (e.g., WHERE t.description CONTAINS 'keyword').
+    Schema: {graph_schema}
+    Question: {question}
+    Cypher:
+    """
+
+    # Use the LangChain GraphCypherQAChain
     cypher_chain = GraphCypherQAChain.from_llm(
         llm=llm, 
         graph=neo4j_graph, 
-        verbose=True,  # <--- Essential for debugging
-        allow_dangerous_requests=True 
+        verbose=True, # Keep True for now to verify the fix
+        allow_dangerous_requests=True,
+        # Override the default prompt template to include better instructions
+        cypher_prompt=ChatPromptTemplate.from_template(CYPHER_PREFIX)
     )
     
     try:
+        # Run the chain with the improved prefix
         graph_result = cypher_chain.run(user_query)
         
-        # Check if the result is a generic failure response from the LLM itself
-        if "I cannot answer the question" in graph_result or "did not find any information" in graph_result:
-             # This means the LLM got no data or irrelevant data from the Cypher execution
-             return Document(page_content=f"Graph query successfully ran, but returned no relevant data or LLM couldn't synthesize the answer. Raw result: {graph_result}")
-
         return Document(
             page_content=f"Knowledge Graph Query Result: {graph_result}",
             metadata={"source": "Neo4j Graph"}
         )
     except Exception as e:
-        # 2. CAPTURE AND DISPLAY THE ACTUAL PYTHON/DATABASE ERROR
         st.error(f"❌ Neo4j/Cypher Chain Execution Error: {e}")
         return Document(page_content="Graph query failed or provided no results due to an execution error.")
-
 
 # --- COMBINED RAG CHAIN ---
 
