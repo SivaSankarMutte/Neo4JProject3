@@ -216,30 +216,35 @@ def build_vector_store_and_graph():
 
 # --- DYNAMIC GRAPH RETRIEVAL CHAIN ---
 
-# --- DYNAMIC GRAPH RETRIEVAL CHAIN ---
+# --- DYNAMIC GRAPH RETRIEVAL CHAIN (DEBUG VERSION) ---
 
 def get_dynamic_graph_context(user_query: str) -> Document:
     """Uses LLM to generate and execute a Cypher query against the Neo4j graph."""
     if not neo4j_graph:
         return Document(page_content="Neo4j not available.")
 
-    # Use the LangChain GraphCypherQAChain to dynamically generate Cypher
+    # 1. SET VERBOSE=TRUE TO SEE THE GENERATED CYPHER QUERY
     cypher_chain = GraphCypherQAChain.from_llm(
         llm=llm, 
         graph=neo4j_graph, 
-        verbose=False, 
-        # === FIX: ADD THIS PARAMETER TO ACKNOWLEDGE SECURITY RISK ===
+        verbose=True,  # <--- CHANGED TO TRUE
         allow_dangerous_requests=True 
     )
     
     try:
         graph_result = cypher_chain.run(user_query)
         
+        # Check if the result is meaningful
+        if "I cannot answer the question" in graph_result or "did not find any information" in graph_result:
+             return Document(page_content="Graph query was successful but returned no relevant data.")
+
         return Document(
             page_content=f"Knowledge Graph Query Result: {graph_result}",
             metadata={"source": "Neo4j Graph"}
         )
-    except Exception:
+    except Exception as e:
+        # 2. CAPTURE AND DISPLAY THE ACTUAL ERROR
+        st.error(f"❌ Neo4j/Cypher Chain Execution Error: {e}")
         return Document(page_content="Graph query failed or provided no results.")
 
 # --- COMBINED RAG CHAIN ---
