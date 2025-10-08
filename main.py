@@ -119,7 +119,10 @@ def extract_text_from_file(file):
 
 
 def build_vector_store_and_graph():
-    """Builds the FAISS vector store AND populates the Neo4j Graph, including the FTS index."""
+    """
+    Builds the FAISS vector store AND populates the Neo4j Graph.
+    (FTS Index creation removed to resolve ProcedureNotFound error)
+    """
     df = pd.read_excel(EXCEL_FILE)
 
     # CHECK FOR REQUIRED COLUMNS
@@ -131,7 +134,7 @@ def build_vector_store_and_graph():
     
     df.dropna(subset=["Description"], inplace=True)
 
-    # 1. Build Vector Store (FAISS) - (Unchanged)
+    # 1. Build Vector Store (FAISS)
     st.info("Building FAISS Vector DB...")
     documents = []
     graph_nodes = []
@@ -171,7 +174,7 @@ def build_vector_store_and_graph():
     vector_store.save_local(VECTOR_STORE_DIR)
     st.success("✅ Vector DB rebuilt.")
 
-    # 2. Populate Neo4j Graph - (Unchanged)
+    # 2. Populate Neo4j Graph
     if neo4j_graph:
         st.info("Populating Neo4j Knowledge Graph...")
         neo4j_graph.query("MATCH (n) DETACH DELETE n") 
@@ -197,26 +200,11 @@ def build_vector_store_and_graph():
             """)
 
         st.success("✅ Neo4j Graph populated.")
+        
+        # NOTE: FTS Index creation code removed here to resolve the Neo4j procedure error.
 
-        # 3. Create/Verify Full-Text Search (FTS) Index (New Step)
-        st.info("Verifying/Creating Full-Text Index: ticketDescriptionIndex...")
-        
-        # Use IF NOT EXISTS syntax for idempotency (standard in Neo4j 5+)
-        index_query = """
-        CREATE FULLTEXT INDEX ticketDescriptionIndex 
-        IF NOT EXISTS 
-        FOR (t:Ticket) 
-        ON EACH [t.description, t.resolution]
-        """
-        
-        try:
-            neo4j_graph.query(index_query)
-            st.success("✅ Full-Text Index 'ticketDescriptionIndex' is ready.")
-        except Exception as e:
-            st.warning(f"⚠️ Could not create FTS index. This may cause poor query performance. Error: {e}")
+
 # --- DYNAMIC GRAPH RETRIEVAL CHAIN ---
-
-# --- DYNAMIC GRAPH RETRIEVAL CHAIN (SIMPLIFIED PROMPT FIX) ---
 
 def get_dynamic_graph_context(user_query: str) -> Document:
     """Uses LLM to generate and execute a Cypher query against the Neo4j graph."""
@@ -224,18 +212,20 @@ def get_dynamic_graph_context(user_query: str) -> Document:
         return Document(page_content="Neo4j not available.")
 
     try:
+        # Refreshing schema is good practice
         neo4j_graph.refresh_schema() 
     except Exception as e:
         st.warning(f"Failed to refresh Neo4j schema: {e}")
         
     # --- Custom Cypher Generation Prompt Template (Focus on CONTAINS/Filtering) ---
+    # This prompt guides the LLM to use the universally compatible CONTAINS operator
     custom_cypher_template = """
     You are an expert Cypher query generator for a helpdesk system. 
     Based on the provided Neo4j graph schema, write a Cypher query that precisely addresses the user's question.
 
     RULES:
     1. The graph contains Ticket, Category, Subcategory, and Application nodes.
-    2. For querying ticket descriptions or resolutions, you MUST use the `CONTAINS` operator (e.g., `WHERE t.description CONTAINS 'keywords'`) to ensure relevance.
+    2. For querying ticket descriptions or resolutions, you MUST use the `CONTAINS` operator (e.g., `WHERE t.description CONTAINS 'keywords'`) to ensure relevance. DO NOT use Full-Text Search procedures.
     3. For querying specific applications or categories, use the `name` property with a `WHERE` clause.
     4. Only return the necessary ticket details (description, resolution, ticketId, category name, application name).
     5. The schema is: {schema}
@@ -258,23 +248,27 @@ def get_dynamic_graph_context(user_query: str) -> Document:
     try:
         graph_result = cypher_chain.run(user_query)
         
-        # ... (rest of the try block remains the same)
+        # The chain might return a generic message if the final synthesis LLM is not confident.
         if "I cannot answer the question" in graph_result or "did not find any information" in graph_result:
-             return Document(page_content=f"Graph query ran, but LLM couldn't synthesize a confident answer from the retrieved data. Raw synthesis: {graph_result}")
+             # The execution was successful, but the LLM found no relevant data.
+             return Document(page_content=f"Graph query ran successfully, but LLM couldn't synthesize a confident answer from the retrieved data. Raw synthesis: {graph_result}")
 
         return Document(
             page_content=f"Knowledge Graph Query Result: {graph_result}",
             metadata={"source": "Neo4j Graph"}
         )
     except Exception as e:
+        # This catches actual Cypher syntax errors or connection failures
         st.error(f"❌ Neo4j/Cypher Chain Execution Error: {e}")
-        return Document(page_content="Graph query failed or provided no results due to an execution error.")
+        return Document(page_content="Graph query failed due to an execution error (check console for generated Cypher).")
+
 # --- COMBINED RAG CHAIN ---
 
 def combined_retriever(query: str) -> Dict[str, Any]:
     """Fetches documents from FAISS and dynamic context from Neo4j."""
     
     # 1. Vector Store (FAISS) Retrieval
+    # NOTE: This will fail if vector_store is not loaded (which is handled in main)
     faiss_docs = vector_store.as_retriever().invoke(query)
     
     # 2. Dynamic Graph Retrieval (returns a single Document)
@@ -353,6 +347,7 @@ if user_query:
                 st.write("---")
             
             st.markdown("#### Neo4j Graph Result (Cypher QA Chain)")
+            # Display the content of the document, which now includes a failure explanation if necessary
             st.code(context_data['graph_context'].page_content, language="markdown")
             
     except Exception as e:
