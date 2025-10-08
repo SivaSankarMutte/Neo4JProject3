@@ -119,12 +119,10 @@ def extract_text_from_file(file):
 
 
 def build_vector_store_and_graph():
-    """
-    Builds the FAISS vector store AND populates the Neo4j Graph.
-    Includes FIX: Ensures all data is converted to string to prevent embedding errors.
-    """
+    """Builds the FAISS vector store AND populates the Neo4j Graph, including the FTS index."""
     df = pd.read_excel(EXCEL_FILE)
 
+    # CHECK FOR REQUIRED COLUMNS
     required_cols = ["Ticket ID", "Description", "Category", "Subcategory", "Application", "Resolution"]
     for col in required_cols:
         if col not in df.columns:
@@ -133,13 +131,13 @@ def build_vector_store_and_graph():
     
     df.dropna(subset=["Description"], inplace=True)
 
-    # 1. Build Vector Store (FAISS)
+    # 1. Build Vector Store (FAISS) - (Unchanged)
     st.info("Building FAISS Vector DB...")
     documents = []
     graph_nodes = []
     
     for _, row in df.iterrows():
-        # --- FIX: EXPLICITLY CONVERT ALL DATA TO STRING ---
+        # FIX: EXPLICITLY CONVERT ALL DATA TO STRING
         ticket_id = str(row.get('Ticket ID', ''))
         description = str(row.get('Description', ''))
         category = str(row.get('Category', ''))
@@ -147,7 +145,6 @@ def build_vector_store_and_graph():
         application = str(row.get('Application', ''))
         resolution = str(row.get('Resolution', ''))
         
-        # Document content for FAISS (RAG)
         content = f"""
         Ticket ID: {ticket_id}
         Description: {description}
@@ -158,7 +155,6 @@ def build_vector_store_and_graph():
         """
         documents.append(Document(page_content=content.strip()))
         
-        # Data for Neo4j (Graph)
         graph_nodes.append({
             'id': ticket_id,
             'description': description,
@@ -175,13 +171,12 @@ def build_vector_store_and_graph():
     vector_store.save_local(VECTOR_STORE_DIR)
     st.success("✅ Vector DB rebuilt.")
 
-    # 2. Populate Neo4j Graph
+    # 2. Populate Neo4j Graph - (Unchanged)
     if neo4j_graph:
         st.info("Populating Neo4j Knowledge Graph...")
         neo4j_graph.query("MATCH (n) DETACH DELETE n") 
 
         for node in graph_nodes:
-            # Sanitization (safe since fields are strings)
             desc_safe = node['description'].replace("'", "\\'") 
             res_safe = node['resolution'].replace("'", "\\'")
 
@@ -203,8 +198,25 @@ def build_vector_store_and_graph():
 
         st.success("✅ Neo4j Graph populated.")
 
-
+        # 3. Create/Verify Full-Text Search (FTS) Index (New Step)
+        st.info("Verifying/Creating Full-Text Index: ticketDescriptionIndex...")
+        
+        # Use IF NOT EXISTS syntax for idempotency (standard in Neo4j 5+)
+        index_query = """
+        CREATE FULLTEXT INDEX ticketDescriptionIndex 
+        IF NOT EXISTS 
+        FOR (t:Ticket) 
+        ON EACH [t.description, t.resolution]
+        """
+        
+        try:
+            neo4j_graph.query(index_query)
+            st.success("✅ Full-Text Index 'ticketDescriptionIndex' is ready.")
+        except Exception as e:
+            st.warning(f"⚠️ Could not create FTS index. This may cause poor query performance. Error: {e}")
 # --- DYNAMIC GRAPH RETRIEVAL CHAIN ---
+
+# --- DYNAMIC GRAPH RETRIEVAL CHAIN (SIMPLIFIED PROMPT FIX) ---
 
 def get_dynamic_graph_context(user_query: str) -> Document:
     """Uses LLM to generate and execute a Cypher query against the Neo4j graph."""
@@ -216,15 +228,14 @@ def get_dynamic_graph_context(user_query: str) -> Document:
     except Exception as e:
         st.warning(f"Failed to refresh Neo4j schema: {e}")
         
-    # --- Custom Cypher Generation Prompt Template (Crucial for filtering!) ---
-    # This template is structured to tell the LLM to use FTS for descriptions and filtering for others.
+    # --- Custom Cypher Generation Prompt Template (Focus on CONTAINS/Filtering) ---
     custom_cypher_template = """
     You are an expert Cypher query generator for a helpdesk system. 
     Based on the provided Neo4j graph schema, write a Cypher query that precisely addresses the user's question.
 
     RULES:
     1. The graph contains Ticket, Category, Subcategory, and Application nodes.
-    2. For querying ticket descriptions or resolutions, you **MUST** use the Full-Text Search index: `ticketDescriptionIndex` (e.g., `CALL db.index.fulltext.queryTickets('ticketDescriptionIndex', 'keywords')`).
+    2. For querying ticket descriptions or resolutions, you MUST use the `CONTAINS` operator (e.g., `WHERE t.description CONTAINS 'keywords'`) to ensure relevance.
     3. For querying specific applications or categories, use the `name` property with a `WHERE` clause.
     4. Only return the necessary ticket details (description, resolution, ticketId, category name, application name).
     5. The schema is: {schema}
@@ -239,15 +250,15 @@ def get_dynamic_graph_context(user_query: str) -> Document:
     cypher_chain = GraphCypherQAChain.from_llm(
         llm=llm, 
         graph=neo4j_graph, 
-        verbose=True, # Keep True for debugging generated Cypher
+        verbose=True, 
         allow_dangerous_requests=True,
-        cypher_prompt=cypher_generator_prompt # Inject the custom prompt
+        cypher_prompt=cypher_generator_prompt 
     )
     
     try:
         graph_result = cypher_chain.run(user_query)
         
-        # The chain might return a generic message if the final synthesis LLM is not confident.
+        # ... (rest of the try block remains the same)
         if "I cannot answer the question" in graph_result or "did not find any information" in graph_result:
              return Document(page_content=f"Graph query ran, but LLM couldn't synthesize a confident answer from the retrieved data. Raw synthesis: {graph_result}")
 
@@ -258,7 +269,6 @@ def get_dynamic_graph_context(user_query: str) -> Document:
     except Exception as e:
         st.error(f"❌ Neo4j/Cypher Chain Execution Error: {e}")
         return Document(page_content="Graph query failed or provided no results due to an execution error.")
-
 # --- COMBINED RAG CHAIN ---
 
 def combined_retriever(query: str) -> Dict[str, Any]:
